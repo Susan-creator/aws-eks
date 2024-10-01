@@ -1,0 +1,116 @@
+---
+- name: Setup EKS Cluster and Deploy Nginx with Load Balancer
+  hosts: localhost
+  connection: local
+  vars:
+    cluster_name: demo
+    region: us-east-1
+    node_group_name: eks-node-group
+    node_instance_type: t3.medium
+    desired_capacity: 2
+    min_size: 1
+    max_size: 3
+    eks_version: "1.30"
+    key_name: eks-key-pair
+  tasks:
+    - name: Create an EKS cluster
+      shell: |
+        eksctl create cluster \
+        --name {{ cluster_name }} \
+        --version {{ eks_version }} \
+        --region {{ region }} \
+        --nodegroup-name {{ node_group_name }} \
+        --node-type {{ node_instance_type }} \
+        --nodes {{ desired_capacity }} \
+        --nodes-min {{ min_size }} \
+        --nodes-max {{ max_size }} \
+        --managed \
+        --ssh-access \
+        --ssh-public-key {{ key_name }}
+
+    - name: Update kubeconfig
+      shell: |
+        aws eks --region {{ region }} update-kubeconfig --name {{ cluster_name }}
+
+    - name: Install Helm (if required)
+      shell: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+    - name: Confirm EKS cluster is up
+      shell: |
+        kubectl get nodes
+
+    - name: Create ConfigMap with custom HTML content
+      shell: |
+        kubectl apply -f - <<EOF
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: nginx-html-config
+        data:
+          index.html: |
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Suni Nginx Web App</title>
+            </head>
+            <body>
+                <h1>Hello from Suni</h1>
+                <p>At Suni we train Cloud and DevOps Engineers.</p>
+            </body>
+            </html>
+        EOF
+
+    - name: Deploy Nginx to EKS
+      shell: |
+        kubectl apply -f - <<EOF
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: nginx-deployment
+        spec:
+          replicas: 2
+          selector:
+            matchLabels:
+              app: nginx
+          template:
+            metadata:
+              labels:
+                app: nginx
+            spec:
+              containers:
+              - name: nginx
+                image: nginx:latest
+                ports:
+                - containerPort: 80
+                volumeMounts:
+                - name: html-volume
+                  mountPath: /usr/share/nginx/html
+              volumes:
+              - name: html-volume
+                configMap:
+                  name: nginx-html-config
+        EOF
+
+    - name: Expose Nginx service with LoadBalancer
+      shell: |
+        kubectl apply -f - <<EOF
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: nginx-service
+        spec:
+          selector:
+            app: nginx
+          ports:
+            - protocol: TCP
+              port: 80
+              targetPort: 80
+          type: LoadBalancer
+        EOF
+
+    - name: Get the external IP of the Nginx service
+      shell: kubectl get svc nginx-service -o jsonpath="{.status.loadBalancer.ingress[0].hostname}"
+      register: nginx_service_hostname
+
+
